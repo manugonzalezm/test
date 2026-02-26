@@ -6,34 +6,175 @@
 ## Índice
 
 1. [Descripción del sistema](#1-descripción-del-sistema)
-2. [Arquitectura en capas](#2-arquitectura-en-capas)
-3. [TDAs básicos implementados](#3-tdas-básicos-implementados)
-4. [TDAs de aplicación](#4-tdas-de-aplicación)
+2. [Cobertura de las tres iteraciones](#2-cobertura-de-las-tres-iteraciones)
+3. [Arquitectura en capas](#3-arquitectura-en-capas)
+4. [TDAs básicos implementados](#4-tdas-básicos-implementados)
 5. [ABB — Árbol Binario de Búsqueda](#5-abb--árbol-binario-de-búsqueda)
-6. [StaticClientesTDA — la pieza central](#6-staticclientestda--la-pieza-central)
-7. [Tabla de complejidades por método](#7-tabla-de-complejidades-por-método)
-8. [Elecciones de diseño y por qué](#8-elecciones-de-diseño-y-por-qué)
-9. [Patrones de diseño aplicados](#9-patrones-de-diseño-aplicados)
-10. [Persistencia y entrada/salida](#10-persistencia-y-entradासalida)
-11. [Preguntas frecuentes del profesor](#11-preguntas-frecuentes-del-profesor)
+6. [TDAs de aplicación](#6-tdas-de-aplicación)
+7. [StaticClientesTDA — la pieza central](#7-staticclientestda--la-pieza-central)
+8. [Tabla de complejidades por método](#8-tabla-de-complejidades-por-método)
+9. [Elecciones de diseño y por qué](#9-elecciones-de-diseño-y-por-qué)
+10. [Patrones de diseño aplicados](#10-patrones-de-diseño-aplicados)
+11. [Persistencia y entrada/salida](#11-persistencia-y-entradasalida)
+12. [Preguntas frecuentes del profesor](#12-preguntas-frecuentes-del-profesor)
 
 ---
 
 ## 1. Descripción del sistema
 
-El sistema simula una **red social empresarial** de consola. Los usuarios (clientes) pueden:
+Sistema de red social empresarial de consola. Los usuarios (clientes) pueden:
 
 - Registrarse con nombre y puntuación (scoring).
-- **Seguir** directamente a otros clientes (sin aprobación, máximo 2 seguidos por usuario).
-- **Enviar solicitudes de amistad** que el destinatario debe aceptar o rechazar.
-- Ver las **distancias** entre usuarios (cuántos saltos los separan) por seguimiento o amistad.
-- Explorar la **red extendida** de un usuario con BFS + ABB.
+- **Seguir** directamente a otros clientes (sin aprobación, máximo 2 seguidos).
+- **Enviar solicitudes de amistad** almacenadas en la lista propia del receptor; el destinatario las acepta o rechaza por índice.
+- Ver las **distancias** entre usuarios (saltos) por seguimiento o por amistad.
+- Explorar la **red extendida** de un usuario con BFS + ABB (nivel 4).
 - Deshacer la última acción (historial LIFO).
 - Persistir el estado en `clientes.json` y exportar el historial a `acciones.csv`.
 
 ---
 
-## 2. Arquitectura en capas
+## 2. Cobertura de las tres iteraciones
+
+### Iteración 1 — Gestión básica de clientes y acciones
+
+| Requerimiento | Implementación | Complejidad |
+|---|---|---|
+| Almacenar y buscar clientes por nombre | `HashMap<String, Cliente>` en `StaticClientesTDA` | O(1) |
+| Buscar clientes por scoring | `TreeMap<Integer, List<String>>` en `StaticClientesTDA` | O(log n) |
+| Historial de acciones (registrar/deshacer) | `DynamicPilaTDA<Accion>` en `StaticHistorialAccionesTDA` | O(1) |
+| Solicitudes de seguimiento en orden de envío | `DynamicColaTDA` (TDA implementado, estudiado en la iteración) | O(1) |
+| Carga desde JSON | `CargadorClientesJson` con Gson | O(n + e) |
+| Pruebas unitarias | `GestorClientesTest`, `HistorialAccionesTest`, etc. | — |
+
+**Decisión clave — búsqueda eficiente:**  
+Se usan `HashMap` y `TreeMap` de Java (en lugar de los TDAs propios O(n)) para garantizar O(1) y O(log n). Los TDAs propios se implementan y estudian, pero para las búsquedas de negocio se eligen las estructuras con mejor complejidad.
+
+---
+
+### Iteración 2 — Relaciones entre clientes (seguimiento + ABB)
+
+| Requerimiento | Implementación | Complejidad |
+|---|---|---|
+| Cada cliente sigue hasta 2 clientes | `GrafoLA` dirigido + restricción `MAX_SEGUIDOS = 2` | O(grado) |
+| Clientes ordenados por scoring | `TreeMap<Integer, List<String>>` (ya presente) | O(log n) |
+| Consulta de conexiones con ABB | `ABB<Integer>` — BFS + inserción de scorings | O(V + E + V·log V) |
+| Imprimir nivel 4 del ABB | `ABB.obtenerNivel(4)` | O(n) |
+| Persistencia de seguimientos | Campo `siguiendo` en `clientes.json` | O(n + e) |
+| Pruebas unitarias | `StaticClientesTDATest`, `GestorClientesTest` | — |
+
+**Decisión clave — grafo dirigido:**  
+El seguimiento es asimétrico (A sigue a B no implica que B siga a A). Se usa un `GrafoLA` dirigido. `GrafoLA` se elige sobre `GrafoMA` porque las redes son dispersas y `GrafoLA` usa O(V+E) de memoria vs O(V²).
+
+---
+
+### Iteración 3 — Relaciones generales (amistades + distancias)
+
+Esta sección se desarrolla en detalle porque es la iteración más reciente.
+
+#### 3.1 Relaciones generales — amistades/conexiones
+
+**Requerimiento:** _"Implementar una estructura para gestionar relaciones generales entre clientes. Permitir agregar relaciones y obtener los vecinos de un cliente. Se valorará O(1) para obtener vecinos."_
+
+**Implementación:**
+
+Se usa un segundo `GrafoLA` **no dirigido** (`grafoNoDirigido` en `StaticClientesTDA`). La no dirección se implementa agregando la arista en ambos sentidos al aceptar una amistad:
+
+```java
+grafoNoDirigido.AgregarArista(idA, idB, 1);  // A → B
+grafoNoDirigido.AgregarArista(idB, idA, 1);  // B → A
+```
+
+Los métodos expuestos:
+
+| Método | Complejidad | Descripción |
+|---|---|---|
+| `agregarAmistad(a, b)` | O(grado) | Crea aristas A→B y B→A |
+| `eliminarAmistad(a, b)` | O(grado) | Elimina aristas A→B y B→A |
+| `obtenerVecinos(nombre)` | O(grado) | Devuelve el conjunto de amigos |
+
+**¿Por qué O(grado) ≈ O(1) en la práctica?**  
+En una red social dispersa, el grado promedio (cantidad de amigos por usuario) es una constante pequeña e independiente del total de usuarios V. Por eso, aunque formalmente es O(grado), en el contexto del sistema se comporta como O(1) para el usuario típico, que es lo que valora la consigna.
+
+**¿Por qué un segundo grafo y no el mismo?**  
+El seguimiento es una relación asimétrica y tiene la restricción de máximo 2. La amistad es simétrica y sin límite. Mezclarlas en el mismo grafo complicaría las validaciones y contaminaría las consultas de distancia.
+
+#### 3.2 Distancia entre clientes
+
+**Requerimiento:** _"Implementar un mecanismo para calcular la distancia (número de saltos) entre dos clientes en la red."_
+
+**Implementación:** BFS (Breadth-First Search) implementado en `StaticClientesTDA.bfs()`, reutilizado para ambos grafos:
+
+```
+calcularDistanciaSeguimiento(origen, destino) → bfs(grafoDirigido,    idO, idD)
+calcularDistanciaAmistad(origen, destino)     → bfs(grafoNoDirigido, idO, idD)
+```
+
+El BFS explora el grafo nivel por nivel usando una `Queue<Integer>` (de Java), manteniendo un `Map<Integer, Integer>` de distancias ya calculadas. Devuelve `-1` si no hay camino.
+
+**Complejidad:** O(V + E) — visita cada vértice y arista exactamente una vez en el peor caso.
+
+**¿Por qué BFS y no DFS?**  
+BFS garantiza encontrar el **camino más corto** en grafos no ponderados (o con peso uniforme). DFS no garantiza el mínimo de saltos.
+
+#### 3.3 Persistencia de relaciones generales
+
+**Requerimiento:** _"Extender la carga desde JSON para incluir las relaciones generales."_
+
+El archivo `clientes.json` tiene el campo `conexiones` que representa las amistades:
+
+```json
+{
+  "nombre": "Alice",
+  "scoring": 95,
+  "siguiendo": ["Bob"],
+  "conexiones": ["Bob", "Charlie"]
+}
+```
+
+`CargadorClientesJson` carga en **dos pasadas**:
+1. Primera pasada: crea todos los vértices (clientes) en los grafos.
+2. Segunda pasada: agrega aristas (`siguiendo` → grafo dirigido; `conexiones` → grafo no dirigido).
+
+La separación en dos pasadas garantiza que todos los vértices existan antes de intentar conectarlos.
+
+`GuardadorClientesJson` serializa el estado actual consultando los grafos directamente (`obtenerVecinos`, `obtenerSeguidos`), no el objeto `Cliente`, evitando duplicación de datos.
+
+#### 3.4 Solicitudes de amistad — diseño per-usuario
+
+**Evolución de diseño:** Inicialmente las solicitudes se manejaban en una cola global (`ColaSolicitudesSeguimiento`). Tras el análisis, se detectaron dos problemas:
+
+1. **Sin caso de uso global:** Ninguna operación del sistema necesita ver las solicitudes de todos los usuarios a la vez; siempre se filtra por usuario destino.
+2. **Semántica incorrecta:** El usuario elige qué solicitud aceptar por índice (número en pantalla), no por orden de llegada FIFO.
+
+**Diseño actual:** Cada `Cliente` tiene su propia `List<SolicitudSeguimiento> solicitudesRecibidas` (ArrayList).
+
+| Operación | Estructura anterior (cola global) | Estructura actual (lista por usuario) |
+|---|---|---|
+| Enviar solicitud | O(1) encolar | O(n_sol_receptor) — verificar duplicado |
+| Listar pendientes del usuario | O(n_global) — recorrer y reconstruir | O(1) — acceso directo a la lista |
+| Aceptar por índice | O(n_global) — buscar en cola | O(n) — `ArrayList.remove(int)` |
+| Rechazar por índice | O(n_global) | O(n) — `ArrayList.remove(int)` |
+| Semántica | FIFO — no corresponde | Lista ordenada por llegada con acceso por posición ✅ |
+
+donde `n_global` = total de solicitudes de todos los usuarios, y `n` = solicitudes del usuario receptor específico.
+
+#### 3.5 Pruebas unitarias — Iteración 3
+
+| Test | Qué valida |
+|---|---|
+| `amistadBidireccional` | `agregarAmistad` crea aristas en ambas direcciones |
+| `eliminarAmistad` | `eliminarAmistad` quita ambas aristas |
+| `calcularDistanciaSeguimiento` | BFS en grafo dirigido; devuelve -1 si no hay camino |
+| `calcularDistanciaAmistad` | BFS en grafo no dirigido |
+| `aceptarSolicitudAmistadCreaAmistad` | Flujo completo: enviar → aceptar → amistad creada |
+| `rechazarSolicitudAmistad` | Rechazar elimina de la lista sin crear amistad |
+| `deshacerAceptarSolicitudAmistad` | Deshacer elimina la amistad creada |
+| `testCargaClientesDesdeJson` | Las conexiones del JSON se cargan correctamente |
+
+---
+
+## 3. Arquitectura en capas
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -41,7 +182,7 @@ El sistema simula una **red social empresarial** de consola. Los usuarios (clien
 │  utils/Menu · MenuBuilder · MenuRedSocial                   │
 ├─────────────────────────────────────────────────────────────┤
 │  Servicios (Fachadas)                                       │
-│  GestorClientes · HistorialAcciones · ColaSolicitudesSeg.   │
+│  GestorClientes · HistorialAcciones                         │
 ├─────────────────────────────────────────────────────────────┤
 │  TDAs de Aplicación (interfaces)                            │
 │  ClientesTDA · HistorialAccionesTDA · SolicitudesSeg.TDA   │
@@ -63,7 +204,7 @@ El sistema simula una **red social empresarial** de consola. Los usuarios (clien
 
 | Paquete | Responsabilidad |
 |---|---|
-| `model` | POJOs inmutables del dominio |
+| `model` | POJOs del dominio (inmutables salvo lista de solicitudes) |
 | `basic_tdas/tda` | Interfaces de estructuras elementales |
 | `basic_tdas/implementation` | Implementaciones estáticas y dinámicas |
 | `basic_tdas/entities` | Nodos internos (Nodo, NodoGrafo, NodoArista) |
@@ -71,414 +212,359 @@ El sistema simula una **red social empresarial** de consola. Los usuarios (clien
 | `implementation` | Implementaciones de TDAs de negocio |
 | `EstructuraABB` | Árbol Binario de Búsqueda genérico |
 | `services` | Fachadas de negocio + I/O |
-| `utils` | Sistema de menús (Menu/MenuBuilder/MenuRedSocial) |
+| `utils` | Sistema de menús |
 
 ---
 
-## 3. TDAs básicos implementados
+## 4. TDAs básicos implementados
 
-### 3.1 PilaTDA — Pila (LIFO)
+### 4.1 PilaTDA — Pila (LIFO)
 
-**Propósito:** Estructura LIFO (Last In, First Out). Se usa para el historial de acciones (deshacer).
+**Propósito en el sistema:** Historial de acciones (deshacer).  
+**¿Por qué LIFO?** El deshacer siempre revierte la **última** acción realizada.
 
-**Operaciones:**
-
-| Método | Descripción | Static | Dynamic |
-|---|---|---|---|
-| `InicializarPila()` | Prepara la estructura | O(1) | O(1) |
-| `Apilar(x)` | Inserta al tope | O(1) | O(1) |
-| `Desapilar()` | Elimina el tope | O(1) | O(1) |
-| `Tope()` | Consulta el tope sin eliminarlo | O(1) | O(1) |
-| `PilaVacia()` | Indica si está vacía | O(1) | O(1) |
-
-**Implementación estática:** arreglo de tamaño fijo + índice. El tope está en `a[indice-1]`.  
-**Implementación dinámica:** lista enlazada simple con puntero al primer nodo.
-
-**Por qué LIFO para el historial:** El "deshacer" siempre revierte la **última** acción realizada, que es exactamente el tope de la pila.
-
----
-
-### 3.2 ColaTDA — Cola (FIFO)
-
-**Propósito:** Estructura FIFO (First In, First Out). Se usa para la cola de solicitudes de amistad.
-
-**Operaciones:**
-
-| Método | Descripción | Static | Dynamic |
-|---|---|---|---|
-| `InicializarCola()` | Prepara la estructura | O(1) | O(1) |
-| `Acolar(x)` | Inserta al final | O(1) | O(1) |
-| `Desacolar()` | Elimina el primero | **O(n)** (desplaza) | O(1) |
-| `Primero()` | Consulta el primero | O(1) | O(1) |
-| `ColaVacia()` | Indica si está vacía | O(1) | O(1) |
-
-**Diferencia clave entre implementaciones:**
-- `StaticColaTDA.Desacolar()` es **O(n)** porque debe desplazar todo el arreglo hacia la izquierda.
-- `DynamicColaTDA.Desacolar()` es **O(1)** porque solo actualiza el puntero `primero`.
-- La implementación dinámica mantiene un puntero `ultimo` para insertar en O(1) sin recorrer la lista.
-
-**Por qué FIFO para solicitudes:** Las solicitudes de amistad deben procesarse en el orden en que llegaron; la primera solicitud enviada es la primera en ser procesada.
-
----
-
-### 3.3 ConjuntoTDA — Conjunto
-
-**Propósito:** Colección sin duplicados y sin orden definido.
-
-**Operaciones:**
-
-| Método | Descripción | Complejidad |
+| Método | Static | Dynamic |
 |---|---|---|
-| `InicializarConjunto()` | Prepara la estructura | O(1) |
-| `Agregar(x)` | Agrega si no existe (llama `Pertenece`) | O(n) |
-| `Sacar(x)` | Elimina el elemento | O(n) |
-| `Pertenece(x)` | Búsqueda lineal | O(n) |
-| `Elegir()` | Devuelve un elemento arbitrario | O(1) |
-| `ConjuntoVacio()` | Indica si está vacío | O(1) |
+| `InicializarPila()` | O(1) | O(1) |
+| `Apilar(x)` | O(1) | O(1) |
+| `Desapilar()` | O(1) | O(1) |
+| `Tope()` | O(1) | O(1) |
+| `PilaVacia()` | O(1) | O(1) |
 
-**Implementación estática:** arreglo + `cant`. `Sacar` mueve el último elemento al hueco para no dejar espacios vacíos en O(1) de compra (la búsqueda sigue siendo O(n)).  
-**Implementación dinámica:** lista enlazada encabezada por `c`. `Agregar` inserta al frente si no pertenece.
-
-**Invariante:** No hay elementos duplicados. `Agregar` garantiza esto verificando `Pertenece` antes de insertar.
+**Implementación dinámica:** lista enlazada con puntero al primer nodo. Inserción y eliminación siempre al frente.  
+**Implementación estática:** arreglo fijo, tope en `a[indice-1]`.
 
 ---
 
-### 3.4 DiccionarioSimpleTDA — Diccionario (1 clave → 1 valor)
+### 4.2 ColaTDA — Cola (FIFO)
 
-**Propósito:** Mapeo clave-valor donde cada clave tiene exactamente un valor.
+**Propósito en el sistema:** TDA implementado y estudiado; la cola dinámica se usa como base en `StaticSolicitudesSeguimientoTDA` (que se mantiene como TDA autónomo aunque el flujo de la aplicación ahora usa listas por usuario).  
+**¿Por qué FIFO originalmente para solicitudes?** Las solicitudes deben procesarse en orden de llegada.
 
-**Operaciones:**
-
-| Método | Descripción | Complejidad |
+| Método | Static | Dynamic |
 |---|---|---|
-| `InicializarDiccionario()` | Prepara la estructura | O(1) |
-| `Agregar(clave, valor)` | Inserta o actualiza | O(n) |
-| `Eliminar(clave)` | Elimina la clave | O(n) |
-| `Recuperar(clave)` | Devuelve el valor | O(n) |
-| `Claves()` | Devuelve un ConjuntoTDA con todas las claves | O(n) |
+| `InicializarCola()` | O(1) | O(1) |
+| `Acolar(x)` | O(1) | O(1) |
+| `Desacolar()` | **O(n)** (desplaza) | O(1) |
+| `Primero()` | O(1) | O(1) |
+| `ColaVacia()` | O(1) | O(1) |
 
-**Implementación:** Dos arreglos paralelos `claves[]` y `valores[]`. La búsqueda de clave es O(n) lineal. La eliminación mueve el último elemento al hueco (swap-and-decrement).
-
----
-
-### 3.5 DiccionarioMultipleTDA — Diccionario (1 clave → N valores)
-
-**Propósito:** Mapeo clave-valores donde cada clave puede tener múltiples valores distintos.
-
-**Operaciones:**
-
-| Método | Descripción | Complejidad |
-|---|---|---|
-| `InicializarDiccionario()` | Prepara la estructura | O(1) |
-| `Agregar(clave, valor)` | Agrega valor a la clave | O(n+m) |
-| `Eliminar(clave)` | Elimina la clave con todos sus valores | O(n) |
-| `EliminarValor(clave, valor)` | Elimina un valor específico | O(n+m) |
-| `Recuperar(clave)` | Devuelve ConjuntoTDA de valores | O(n+m) |
-| `Claves()` | Devuelve ConjuntoTDA de claves | O(n) |
-
-Donde `n` = cantidad de claves, `m` = cantidad de valores por clave.
-
-**Implementación:** Arreglo de claves + matriz bidimensional de valores. Cada posición `i` del arreglo de claves corresponde a la fila `i` de la matriz.
+**Diferencia clave:** `StaticColaTDA.Desacolar()` es O(n) porque desplaza todo el arreglo. `DynamicColaTDA.Desacolar()` es O(1) porque solo avanza el puntero `primero`. La implementación dinámica mantiene además un puntero `ultimo` para `Acolar` en O(1).
 
 ---
 
-### 3.6 GrafoTDA — Grafo con aristas ponderadas
+### 4.3 ConjuntoTDA — Conjunto
 
-**Dos implementaciones:**
+**Invariante:** No hay elementos duplicados.
+
+| Método | Complejidad |
+|---|---|
+| `InicializarConjunto()` | O(1) |
+| `Agregar(x)` | O(n) — llama a `Pertenece` antes |
+| `Sacar(x)` | O(n) |
+| `Pertenece(x)` | O(n) |
+| `Elegir()` | O(1) |
+| `ConjuntoVacio()` | O(1) |
+
+`Agregar` es O(n) porque debe verificar unicidad llamando a `Pertenece`.  
+`Sacar` estático: swap del elemento encontrado con el último y decremento del contador — O(n) de búsqueda, O(1) de eliminación.
+
+---
+
+### 4.4 DiccionarioSimpleTDA
+
+Mapeo 1 clave → 1 valor. Implementación: dos arreglos paralelos `claves[]` y `valores[]`.
+
+| Método | Complejidad |
+|---|---|
+| `Agregar(clave, valor)` | O(n) |
+| `Eliminar(clave)` | O(n) |
+| `Recuperar(clave)` | O(n) |
+| `Claves()` | O(n) |
+
+Eliminación usa swap-and-decrement para no dejar huecos.
+
+---
+
+### 4.5 DiccionarioMultipleTDA
+
+Mapeo 1 clave → N valores (sin duplicados). Implementación: arreglo de claves + matriz 2D de valores.
+
+| Método | Complejidad |
+|---|---|
+| `Agregar(clave, valor)` | O(n+m) |
+| `Recuperar(clave)` | O(n+m) |
+| `Claves()` | O(n) |
+| `Eliminar(clave)` | O(n) |
+| `EliminarValor(clave, valor)` | O(n+m) |
+
+`n` = cantidad de claves, `m` = cantidad de valores por clave.
+
+---
+
+### 4.6 GrafoTDA — Dos implementaciones
 
 #### GrafoMA (Matriz de Adyacencia)
 
-| Método | Complejidad | Por qué |
-|---|---|---|
-| `InicializarGrafo()` | **O(n²)** | Aloca la matriz n×n completa |
-| `AgregarVertice(v)` | O(Vert) | Inicializa fila y columna del nuevo vértice |
-| `EliminarVertice(v)` | O(Vert) | Reemplaza con el último (swap) |
-| `AgregarArista(v1,v2,p)` | O(Vert) | Necesita `Vert2Indice` para mapear etiqueta → índice |
-| `ExisteArista(v1,v2)` | O(Vert) | `MAdy[i][j]` en O(1) pero `Vert2Indice` es O(Vert) |
-| `PesoArista(v1,v2)` | O(Vert) | Igual que ExisteArista |
-| `Vertices()` | O(Vert) | Recorre el arreglo de etiquetas |
+| Método | Complejidad |
+|---|---|
+| `InicializarGrafo()` | **O(n²)** — aloca la matriz n×n |
+| `AgregarVertice(v)` | O(V) |
+| `AgregarArista(v1,v2,p)` | O(V) — `Vert2Indice` es lineal |
+| `ExisteArista(v1,v2)` | O(V) |
+| `PesoArista(v1,v2)` | O(V) |
+| `EliminarVertice(v)` | O(V) |
 
-**Memoria:** O(V²). Tiene `n = 1_100_000` hardcodeado → **no apta para uso real**.
+Memoria: O(V²). `n` hardcodeado en 1.100.000 → inviable en producción real.
 
-#### GrafoLA (Lista de Adyacencia)
+#### GrafoLA (Lista de Adyacencia) — el usado en la aplicación
 
-| Método | Complejidad | Por qué |
-|---|---|---|
-| `InicializarGrafo()` | O(1) | Solo inicializa puntero y HashMap |
-| `AgregarVertice(v)` | O(1) | Inserta al frente de la lista + put en HashMap |
-| `EliminarVertice(v)` | O(Arist_v) | Elimina aristas entrantes de otros nodos |
-| `AgregarArista(v1,v2,p)` | O(1) | Lookup O(1) por HashMap + inserción al frente |
-| `ExisteArista(v1,v2)` | O(grado) | Recorre lista de adyacencia de v1 |
-| `PesoArista(v1,v2)` | O(grado) | Igual que ExisteArista |
-| `Vertices()` | O(Vert) | Recorre la lista de NodoGrafo |
-| `ObtenerAdyacentes(v)` | O(grado) | Recorre lista de aristas de v |
-| `GradoSalida(v)` | O(grado) | Cuenta aristas de salida de v |
+| Método | Complejidad |
+|---|---|
+| `InicializarGrafo()` | O(1) |
+| `AgregarVertice(v)` | O(1) |
+| `AgregarArista(v1,v2,p)` | O(1) — lookup O(1) por HashMap interno |
+| `ExisteArista(v1,v2)` | O(grado) |
+| `PesoArista(v1,v2)` | O(grado) |
+| `EliminarVertice(v)` | O(Arist_v) |
+| `ObtenerAdyacentes(v)` | O(grado) |
+| `GradoSalida(v)` | O(grado) |
 
-**Memoria:** O(V + E). Usa un `HashMap<Integer, NodoGrafo>` interno como índice.
-
-**Por qué GrafoLA en la aplicación real:** Las redes sociales son grafos **dispersos** (pocos seguidos por usuario, pocos amigos). GrafoLA usa O(V+E) vs O(V²) de GrafoMA, y sus operaciones críticas son O(grado) que es bajo en grafos dispersos.
-
----
-
-## 4. TDAs de aplicación
-
-### 4.1 HistorialAccionesTDA → StaticHistorialAccionesTDA
-
-**Estructura interna:** `DynamicPilaTDA<Accion>`  
-**Patrón:** LIFO — la última acción registrada es la primera en deshacerse.
-
-| Método | Complejidad | Implementación |
-|---|---|---|
-| `registrarAccion(a)` | O(1) | `pila.Apilar(a)` |
-| `deshacerUltimaAccion()` | O(1) | `pila.Tope()` + `pila.Desapilar()` |
-| `hayAcciones()` | O(1) | `!pila.PilaVacia()` |
-| `listarUltimas(n)` | O(n) | Desapila a lista temporal y vuelve a apilar |
-
-**Detalle de `listarUltimas`:** Usa una pila auxiliar temporal para preservar el orden sin destruir el historial. Desapila `n` elementos a `temp`, los agrega al resultado, luego los devuelve a la pila original.
-
----
-
-### 4.2 SolicitudesSeguimientoTDA → StaticSolicitudesSeguimientoTDA
-
-**Estructura interna:** `DynamicColaTDA<SolicitudSeguimiento>`  
-**Patrón:** FIFO — la primera solicitud enviada es la primera en procesarse.
-
-| Método | Complejidad | Implementación |
-|---|---|---|
-| `agregarSolicitud(s)` | O(1) | `cola.Acolar(s)` |
-| `procesarSolicitud()` | O(1) | `cola.Primero()` + `cola.Desacolar()` |
-| `haySolicitudes()` | O(1) | `!cola.ColaVacia()` |
-| `quitarSolicitud(s)` | O(n) | Recorre y reconstruye la cola con cola auxiliar |
-| `listarPendientes()` | O(n) | Recorre y reconstruye con cola auxiliar |
-| `procesarSolicitudParaUsuario(u)` | O(n) | Busca y extrae la primera solicitud para `u` |
-| `listarPendientesParaUsuario(u)` | O(n) | Filtra sin modificar la cola |
-
-**Patrón cola auxiliar:** Varios métodos O(n) vacían la cola principal, procesan elementos, y los reencolan en una cola temporal; luego reencolan todo a la cola original. Esto preserva el orden FIFO mientras permite buscar/filtrar.
+Memoria: O(V + E). Optimización: `HashMap<Integer, NodoGrafo>` interno para lookup de vértice en O(1).
 
 ---
 
 ## 5. ABB — Árbol Binario de Búsqueda
 
-**Clase:** `ABB<T extends Comparable<T>>` con nodos `NodoABB<T>`.
+**Propósito:** `consultarConexionesNivel4` inserta los scorings de la red extendida en el ABB y recupera los del nivel 4.
 
-**Propósito en el sistema:** Se usa en `consultarConexionesNivel4` para insertar los scorings de la red extendida y luego recuperar los que están exactamente en el nivel 4 del árbol.
+**Propiedad:** subárbol izquierdo < nodo ≤ subárbol derecho.
 
-| Método | Complejidad promedio | Complejidad peor caso |
+| Método | Promedio | Peor caso |
 |---|---|---|
-| `agregar(x)` | O(log n) | O(n) — árbol degenerado (lista) |
-| `obtenerNivel(k)` | O(n) | O(n) — siempre recorre todos los nodos |
-| `imprimirNivel(k)` | O(n) | O(n) |
+| `agregar(x)` | O(log n) | O(n) — árbol degenerado |
+| `obtenerNivel(k)` | O(n) | O(n) |
 | `estaVacio()` | O(1) | O(1) |
 
-**Propiedad del ABB:**
-- Todo elemento del subárbol izquierdo de un nodo es **menor** que el nodo.
-- Todo elemento del subárbol derecho es **mayor o igual** que el nodo.
+**Caso degenerado:** insertar en orden creciente/decreciente genera una lista → O(n) en todo. En este sistema no es un problema práctico porque los scorings de una red son variados.
 
-**Por qué se usa un ABB aquí:** La consulta requiere obtener los elementos que están exactamente en el nivel 4 del árbol. El ABB organiza los scorings de forma ordenada jerárquicamente, y `obtenerNivel(4)` extrae eficientemente los nodos de ese nivel mediante recursión.
-
-**Caso degenerado:** Si los scorings se insertan en orden creciente o decreciente, el ABB degenera en una lista enlazada y `agregar` pasa a ser O(n). En el contexto del sistema esto no es un problema práctico porque los scorings de una red son variados.
+**¿Qué es el nivel 4?** Raíz = nivel 1, hijos = nivel 2, nietos = nivel 3, bisnietos = nivel 4. `obtenerNivel(4)` recorre el árbol recursivamente decrementando el nivel en cada llamada.
 
 ---
 
-## 6. StaticClientesTDA — la pieza central
+## 6. TDAs de aplicación
 
-Esta clase concentra toda la lógica de la red social. Combina **cuatro estructuras** para distintos casos de uso:
+### 6.1 HistorialAccionesTDA → StaticHistorialAccionesTDA
+
+Estructura interna: `DynamicPilaTDA<Accion>`.
+
+| Método | Complejidad |
+|---|---|
+| `registrarAccion(a)` | O(1) — `pila.Apilar(a)` |
+| `deshacerUltimaAccion()` | O(1) — `pila.Tope()` + `pila.Desapilar()` |
+| `hayAcciones()` | O(1) |
+| `listarUltimas(n)` | O(n) — pila auxiliar temporal |
+
+`listarUltimas` usa una pila auxiliar: desapila `n` elementos al resultado, los reapila en `temp`, luego los vuelve a la pila original. Preserva el orden sin destruir el historial.
+
+---
+
+### 6.2 SolicitudesSeguimientoTDA → StaticSolicitudesSeguimientoTDA
+
+TDA implementado (disponible y con tests). Usa `DynamicColaTDA<SolicitudSeguimiento>`.  
+**Nota:** En el flujo actual de la aplicación este TDA no se usa directamente; las solicitudes viven en la lista propia de cada `Cliente`. Este TDA se conserva como implementación estudiada y testeada de la Cola aplicada a un dominio concreto.
+
+---
+
+## 7. StaticClientesTDA — la pieza central
+
+Combina cuatro estructuras para distintos casos de uso:
 
 ```
 StaticClientesTDA
 │
-├── HashMap<String, Cliente>         clientesPorNombre   → O(1) búsqueda por nombre
-├── TreeMap<Integer, List<String>>   clientesPorScoring  → O(log n) búsqueda por scoring
-├── GrafoLA                          grafoDirigido        → seguimiento (A→B sin reciprocidad)
-└── GrafoLA                          grafoNoDirigido     → amistades (A↔B, bidireccional)
+├── HashMap<String, Cliente>          clientesPorNombre   → búsqueda O(1)
+├── TreeMap<Integer, List<String>>    clientesPorScoring  → búsqueda O(log n)
+├── GrafoLA  grafoDirigido            → seguimiento (A→B, max 2 por usuario)
+└── GrafoLA  grafoNoDirigido          → amistades (A↔B, bidireccional)
+```
+
+Cada `Cliente` además tiene internamente:
+```
+Cliente
+└── List<SolicitudSeguimiento> solicitudesRecibidas  → solicitudes de amistad por usuario
 ```
 
 ### Mapeo nombre ↔ ID
 
-Los grafos operan con IDs enteros. Se mantienen dos mapas de traducción:
-- `nombreAId: HashMap<String, Integer>` → nombre a ID
-- `idANombre: HashMap<Integer, String>` → ID a nombre
+Los grafos usan IDs enteros. Dos HashMaps internos traducen:
+- `nombreAId: HashMap<String, Integer>`
+- `idANombre: HashMap<Integer, String>`
 
-Un contador `nextId` asigna IDs únicos y crecientes.
+Un contador `nextId` asigna IDs únicos crecientes.
 
-### Regla de negocio: MAX_SEGUIDOS = 2
+### Regla MAX_SEGUIDOS = 2
 
-Cada cliente puede seguir a como máximo 2 usuarios. Se verifica con `GradoSalida(idCliente) >= MAX_SEGUIDOS` antes de agregar una arista en el grafo dirigido.
+Se verifica con `GradoSalida(idCliente) >= MAX_SEGUIDOS` antes de agregar la arista en el grafo dirigido.
 
-### BFS para distancias
+### BFS — algoritmo de distancias
 
 ```java
-private int bfs(GrafoLA grafo, int idOrigen, int idDestino)
+private int bfs(GrafoLA grafo, int idOrigen, int idDestino) // O(V + E)
 ```
 
-Implementa BFS (Breadth-First Search) usando `Queue<Integer>` de Java. Devuelve la distancia en saltos o -1 si no hay camino. Se usa tanto para `calcularDistanciaSeguimiento` (grafo dirigido) como para `calcularDistanciaAmistad` (grafo no dirigido).
-
-**Complejidad BFS:** O(V + E) donde V = vértices y E = aristas del grafo.
+- Usa `Queue<Integer>` y `Map<Integer, Integer>` (distancias).
+- Retorna la distancia mínima en saltos, o -1 si no hay camino.
+- Se reutiliza para el grafo dirigido (seguimiento) y no dirigido (amistad).
 
 ### consultarConexionesNivel4
 
 ```
-1. BFS desde el nodo inicial sobre el grafo dirigido
-2. Por cada nodo visitado, insertar su scoring en un ABB
-3. Devolver los elementos del nivel 4 del ABB
+1. BFS desde el nodo inicial sobre grafoDirigido    → O(V + E)
+2. Insertar scoring de cada nodo visitado en ABB     → O(V · log V)
+3. Devolver ABB.obtenerNivel(4)                     → O(V)
+Total: O(V + E + V·log V)
 ```
-
-**Complejidad total:** O(V + E + V·log V)
-- O(V + E): BFS
-- O(V·log V): V inserciones en el ABB, cada una O(log V) promedio
 
 ---
 
-## 7. Tabla de complejidades por método
+## 8. Tabla de complejidades por método
 
 ### TDAs básicos
 
 | TDA | Método | Static | Dynamic |
 |---|---|---|---|
-| Pila | Apilar | O(1) | O(1) |
-| Pila | Desapilar | O(1) | O(1) |
-| Pila | Tope | O(1) | O(1) |
+| Pila | Apilar / Desapilar / Tope | O(1) | O(1) |
 | Cola | Acolar | O(1) | O(1) |
 | Cola | Desacolar | **O(n)** | O(1) |
-| Cola | Primero | O(1) | O(1) |
-| Conjunto | Agregar | O(n) | O(n) |
-| Conjunto | Sacar | O(n) | O(n) |
-| Conjunto | Pertenece | O(n) | O(n) |
-| Conjunto | Elegir | O(1) | O(1) |
-| DicSimple | Agregar | O(n) | — |
-| DicSimple | Eliminar | O(n) | — |
-| DicSimple | Recuperar | O(n) | — |
-| DicSimple | Claves | O(n) | — |
-| DicMultiple | Agregar | O(n+m) | — |
-| DicMultiple | Recuperar | O(n+m) | — |
-| DicMultiple | Claves | O(n) | — |
+| Conjunto | Agregar / Sacar / Pertenece | O(n) | O(n) |
+| Conjunto | Elegir / ConjuntoVacio | O(1) | O(1) |
+| DicSimple | Agregar / Eliminar / Recuperar | O(n) | — |
+| DicMultiple | Agregar / Recuperar | O(n+m) | — |
 | Grafo MA | InicializarGrafo | **O(n²)** | — |
-| Grafo MA | AgregarArista | O(V) | — |
-| Grafo MA | ExisteArista | O(V) | — |
-| Grafo LA | AgregarVertice | O(1) | — |
-| Grafo LA | AgregarArista | O(1) | — |
-| Grafo LA | ExisteArista | O(grado) | — |
-| ABB | agregar | O(log n) prom | — |
+| Grafo MA | AgregarArista / ExisteArista | O(V) | — |
+| Grafo LA | AgregarVertice / AgregarArista | O(1) | — |
+| Grafo LA | ExisteArista / ObtenerAdyacentes | O(grado) | — |
+| ABB | agregar | O(log n) prom. | — |
 | ABB | obtenerNivel | O(n) | — |
 
-### TDAs de aplicación (GestorClientes)
+### GestorClientes (operaciones de negocio)
 
-| Método | Complejidad | Justificación |
-|---|---|---|
-| `agregarCliente` | O(1) | HashMap.put + GrafoLA.AgregarVertice |
-| `buscarPorNombre` | O(1) | HashMap.get |
-| `buscarPorScoring` | O(log n) | TreeMap.getOrDefault |
-| `cantidadClientes` | O(1) | HashMap.size |
-| `listarClientes` | O(n) | new ArrayList de todos los valores |
-| `modificarCliente` | O(log n) | Actualiza TreeMap |
-| `eliminarCliente` | O(V) | EliminarVertice en ambos grafos |
-| `agregarSeguido` | O(grado) | GradoSalida + ExisteArista + AgregarArista |
-| `quitarSeguido` | O(grado) | EliminarArista |
-| `obtenerSeguidos` | O(grado) | ObtenerAdyacentes |
-| `calcularDistanciaSeguimiento` | O(V+E) | BFS |
-| `agregarAmistad` | O(grado) | 2× AgregarArista |
-| `eliminarAmistad` | O(grado) | 2× EliminarArista |
-| `calcularDistanciaAmistad` | O(V+E) | BFS |
-| `consultarConexionesNivel4` | O(V+E+V·log V) | BFS + ABB |
-
----
-
-## 8. Elecciones de diseño y por qué
-
-### 8.1 ¿Por qué se implementaron TDAs propios si Java tiene ArrayList, LinkedList, etc.?
-
-El objetivo académico del trabajo es **demostrar el manejo de estructuras de datos desde cero**. Se implementaron Pila, Cola, Conjunto y Diccionario sin usar ninguna colección de `java.util` en las implementaciones base.
-
-Excepción legítima: `StaticClientesTDA` usa `HashMap` y `TreeMap` de Java para garantizar O(1) y O(log n) en búsquedas, ya que los TDAs propios son O(n) en esas operaciones. Esto es una decisión de eficiencia consciente y justificada.
+| Método | Complejidad |
+|---|---|
+| `agregarCliente` | O(1) |
+| `buscarPorNombre` | O(1) |
+| `buscarPorScoring` | O(log n) |
+| `cantidadClientes` | O(1) |
+| `listarClientes` | O(n) |
+| `modificarCliente` | O(log n) |
+| `eliminarCliente` | O(V) |
+| `agregarSeguido` | O(grado) |
+| `quitarSeguido` | O(grado) |
+| `obtenerSeguidos` | O(grado) |
+| `calcularDistanciaSeguimiento` | O(V + E) |
+| `agregarAmistad` | O(grado) |
+| `eliminarAmistad` | O(grado) |
+| `obtenerVecinos` | O(grado) |
+| `calcularDistanciaAmistad` | O(V + E) |
+| `enviarSolicitudAmistad` | O(n_sol_receptor) |
+| `listarSolicitudesRecibidas` | O(1) |
+| `aceptarSolicitudAmistad` | O(grado) |
+| `rechazarSolicitudAmistad` | O(1) |
+| `revocarSolicitudAmistad` | O(n_sol_receptor) |
+| `consultarConexionesNivel4` | O(V + E + V·log V) |
 
 ---
 
-### 8.2 ¿Por qué dos implementaciones (Static y Dynamic) para Pila/Cola/Conjunto?
+## 9. Elecciones de diseño y por qué
+
+### 9.1 ¿Por qué TDAs propios y no los de Java?
+
+El objetivo académico es demostrar el manejo de estructuras de datos desde cero. Se implementan Pila, Cola, Conjunto, Diccionario y Grafo sin usar colecciones de `java.util` en las implementaciones base.
+
+**Excepción justificada:** `StaticClientesTDA` usa `HashMap` y `TreeMap` de Java para garantizar O(1) y O(log n) en las búsquedas de negocio críticas. Los TDAs propios son O(n) en búsqueda, lo cual sería ineficiente para el caso de uso central.
+
+---
+
+### 9.2 ¿Por qué dos implementaciones (Static y Dynamic) para Pila/Cola/Conjunto?
 
 | Aspecto | Static (arreglo) | Dynamic (lista enlazada) |
 |---|---|---|
 | Memoria | Fija, pre-alocada | Crece con los elementos |
-| Velocidad acceso | O(1) por índice | O(1) por puntero |
-| Desacolar (Cola) | **O(n)** — desplaza | O(1) — mueve puntero |
-| Overhead | Bajo (array nativo) | Mayor (objeto Nodo por elemento) |
-| Capacidad | Limitada (CAPACIDAD = 1.1M) | Ilimitada (hasta memoria disponible) |
+| `Desacolar` (Cola) | **O(n)** — desplaza | O(1) — mueve puntero |
+| Capacidad | Limitada (1.1M) | Sin límite práctico |
+| Overhead | Bajo | Mayor (objeto `Nodo` por elemento) |
 
-La **implementación dinámica** se usa en producción (la aplicación instancia `DynamicColaTDA`, `DynamicPilaTDA`, `DynamicConjuntoTDA`) porque no tiene límite de capacidad y el `Desacolar` es O(1).
-
----
-
-### 8.3 ¿Por qué GrafoLA y no GrafoMA para la red social?
-
-| Criterio | GrafoMA | GrafoLA |
-|---|---|---|
-| Memoria | O(V²) | O(V + E) |
-| `AgregarVertice` | O(V) | **O(1)** |
-| `AgregarArista` | O(V) — `Vert2Indice` | **O(1)** — índice HashMap |
-| `ExisteArista` | O(V) — `Vert2Indice` | O(grado) |
-| Grafos dispersos | Desperdicia mucho espacio | Eficiente |
-| `InicializarGrafo` | **O(n²)** — aloca matriz | O(1) |
-
-Las redes sociales son grafos **muy dispersos**: con 1000 usuarios pero cada uno con máximo 2 seguidos y pocos amigos, la cantidad de aristas E << V². GrafoMA desperdiciaría O(V²) de memoria y su inicialización es O(n²).
-
-**Optimización de GrafoLA:** Se agrega un `HashMap<Integer, NodoGrafo>` interno como índice. Sin él, encontrar un vértice sería O(V); con él es O(1). Esta es una mejora que va más allá del TDA básico.
+La **implementación dinámica** se usa en el sistema real (`DynamicColaTDA`, `DynamicPilaTDA`, `DynamicConjuntoTDA`).
 
 ---
 
-### 8.4 ¿Por qué dos grafos separados (dirigido y no dirigido)?
+### 9.3 ¿Por qué GrafoLA y no GrafoMA para la red social?
 
-- **Seguimiento** es una relación asimétrica: A puede seguir a B sin que B siga a A (como en Twitter). Se modela con un **grafo dirigido**.
-- **Amistad** es una relación simétrica: si A es amigo de B, entonces B es amigo de A. Se modela con un **grafo no dirigido** (se agregan aristas en ambas direcciones: A→B y B→A).
+Las redes sociales son grafos **dispersos**: con 1000 usuarios y máximo 2 seguidos + pocos amigos, E << V².
 
-Tener dos grafos separados también permite calcular distancias por separado y mantener las reglas de negocio independientes.
+- GrafoMA: O(V²) de memoria, `InicializarGrafo` O(n²), `AgregarArista` O(V).
+- GrafoLA: O(V + E) de memoria, `InicializarGrafo` O(1), `AgregarArista` O(1).
 
----
-
-### 8.5 ¿Por qué Pila para el historial (deshacer)?
-
-La funcionalidad de "deshacer" necesita acceder siempre a la **acción más reciente**. Esto es exactamente la propiedad LIFO de una pila: el último elemento apilado es el primero en recuperarse. Si usáramos una cola (FIFO), al deshacer obtendríamos la acción más antigua, que es incorrecto.
+**Optimización adicional:** GrafoLA usa un `HashMap<Integer, NodoGrafo>` interno. Sin él, encontrar un vértice sería O(V); con él es O(1).
 
 ---
 
-### 8.6 ¿Por qué Cola para las solicitudes de amistad?
+### 9.4 ¿Por qué dos grafos separados?
 
-Las solicitudes de amistad deben procesarse en el **orden en que se enviaron** (justicia, equidad). La primera solicitud enviada debe ser la primera en poderse aceptar o rechazar. Esto es exactamente FIFO (Cola). Si usáramos una pila, siempre se procesaría primero la última solicitud recibida.
+- **Seguimiento** → relación asimétrica (como Twitter). `GrafoLA` **dirigido**.
+- **Amistad** → relación simétrica. `GrafoLA` **no dirigido** (se agregan dos aristas: A→B y B→A).
 
----
-
-### 8.7 ¿Por qué un ABB para `consultarConexionesNivel4`?
-
-El requerimiento es encontrar los scorings de los contactos de la red extendida que están en el **nivel 4** de un árbol. Al insertar los scorings de los nodos visitados por BFS en un ABB, la estructura organiza los valores de forma jerárquica según su valor numérico. Extraer el nivel 4 permite recuperar los scorings que, dentro de la jerarquía del árbol, ocupan la cuarta generación.
+Mantenerlos separados permite calcular distancias independientemente y aplicar reglas distintas (ej: límite de 2 seguidos solo aplica al dirigido).
 
 ---
 
-### 8.8 ¿Por qué el modelo (Cliente) es inmutable?
+### 9.5 ¿Por qué Lista por usuario para solicitudes y no cola global?
 
-`Cliente` usa campos `final`, no tiene setters, y devuelve copias inmutables de sus listas (`Collections.unmodifiableList`). Esto previene modificaciones accidentales al compartir referencias. Cuando se modifica un cliente (ej: cambio de scoring), se crea un nuevo objeto `Cliente` con los datos actualizados.
+**Problemas de la cola global:**
+1. Ningún caso de uso necesita ver las solicitudes de todos los usuarios a la vez.
+2. El usuario elige qué solicitud aceptar **por índice**, no por orden de llegada FIFO.
+3. `listarPendientesParaUsuario` requería O(n_global) recorriendo y reconstruyendo la cola entera.
 
----
-
-### 8.9 ¿Por qué se hace la carga en dos pasadas en CargadorClientesJson?
-
-```java
-// Primera pasada: cargar todos los clientes
-for (ClienteJson cj : datos.clientes) gestor.agregarCliente(...);
-
-// Segunda pasada: cargar relaciones
-for (ClienteJson cj : datos.clientes) {
-    for (String sig : cj.siguiendo) gestor.agregarSeguido(...);
-    for (String con : cj.conexiones) gestor.agregarAmistad(...);
-}
-```
-
-Si se cargaran las relaciones en la primera pasada, podría intentarse agregar una arista hacia un vértice que aún no existe en el grafo. La separación garantiza que todos los vértices existen antes de agregar las aristas.
+**Solución: `List<SolicitudSeguimiento>` dentro de cada `Cliente`:**
+- `listarSolicitudesRecibidas` → O(1), acceso directo.
+- `aceptarSolicitudAmistad(receptor, indice)` → O(n) `ArrayList.remove(int)`.
+- Escala con el volumen del usuario, no del sistema.
 
 ---
 
-## 9. Patrones de diseño aplicados
+### 9.6 ¿Por qué Pila para el historial?
 
-### 9.1 Builder (Construcción de Menús)
+El deshacer necesita la acción más **reciente** primero → LIFO. Con una Cola (FIFO) se obtendría la más antigua, que es incorrecto.
 
-`MenuBuilder` construye instancias de `Menu` paso a paso con una API fluida (método encadenado). Separa la construcción del objeto de su representación.
+---
+
+### 9.7 ¿Por qué el modelo `Cliente` tiene la lista de solicitudes mutable?
+
+Las solicitudes de amistad son datos **propios del receptor**; su ciclo de vida está atado al usuario. Es más cohesivo almacenarlas dentro del objeto `Cliente` con métodos controlados (`agregarSolicitudRecibida`, `eliminarSolicitudRecibidaPorIndice`) que en una estructura externa.
+
+---
+
+### 9.8 ¿Por qué dos pasadas en `CargadorClientesJson`?
+
+Primera pasada: crear todos los clientes (vértices).  
+Segunda pasada: crear relaciones (aristas).
+
+Si se hiciera en una pasada, se intentaría agregar una arista a un vértice inexistente. `GrafoLA.AgregarArista` silencia esa situación (`if (n1 == null || n2 == null) return`), pero el dato se perdería.
+
+---
+
+### 9.9 ¿Por qué BFS para calcular distancias?
+
+BFS garantiza el **camino más corto** en grafos con pesos uniformes. DFS no lo garantiza. La distancia en "saltos" es exactamente el nivel BFS al que se alcanza el destino.
+
+---
+
+## 10. Patrones de diseño aplicados
+
+### Builder — construcción de menús
+
+`MenuBuilder` construye `Menu` con API fluida (encadenamiento de métodos). Separa la construcción de la representación.
 
 ```java
 new MenuBuilder("RED SOCIAL")
@@ -487,143 +573,104 @@ new MenuBuilder("RED SOCIAL")
     .build();
 ```
 
-### 9.2 Facade (Fachadas de servicio)
+### Facade — servicios de negocio
 
-`GestorClientes`, `HistorialAcciones` y `ColaSolicitudesSeguimiento` son fachadas que:
-- Ocultan la complejidad interna de los TDAs.
-- Exponen una API simple al `MenuRedSocial`.
-- Dependen de abstracciones (interfaces TDA), no de implementaciones concretas.
+`GestorClientes` y `HistorialAcciones` ocultan la complejidad interna de los TDAs y exponen una API simple al `MenuRedSocial`. Dependen de la interfaz TDA, no de la implementación concreta.
 
-### 9.3 Strategy / Inyección de dependencias implícita
+### Strategy / Interfaces
 
-Los TDAs de aplicación (ej: `HistorialAccionesTDA`) son interfaces. La implementación concreta (`StaticHistorialAccionesTDA`) se instancia dentro del servicio, pero podría cambiarse por otra implementación sin modificar el código del servicio.
+`ClientesTDA`, `HistorialAccionesTDA` son interfaces. Se pueden intercambiar implementaciones sin modificar los servicios que las usan.
 
-### 9.4 Template Method (implícito en el menú)
+### Template Method — bucle del menú
 
-`Menu.ejecutarUnaVez()` define el algoritmo general (mostrar menú → leer input → ejecutar opción), y las acciones concretas se inyectan como `Runnable` o `Consumer<Scanner>`.
+`Menu.ejecutarUnaVez()` define el algoritmo general (mostrar → leer → ejecutar), y las acciones concretas se inyectan como `Runnable` o `Consumer<Scanner>`.
 
 ---
 
-## 10. Persistencia y entrada/salida
+## 11. Persistencia y entrada/salida
 
 ### clientes.json
 
 - **Lectura:** `CargadorClientesJson.readFromFile(GestorClientes)` — O(n + e)
 - **Escritura:** `GuardadorClientesJson.guardar(GestorClientes)` — O(n + e)
 - Usa **Gson** para serialización/deserialización.
-- Las relaciones (siguiendo, conexiones) se obtienen del grafo, no del objeto Cliente, evitando duplicación de datos.
-- El guardado se activa automáticamente al salir del sistema.
+- Las relaciones se obtienen de los grafos, no del objeto `Cliente`.
+- Se guarda automáticamente al salir del sistema.
 
 ### acciones.csv
 
 - **Exportación:** `ExportadorAccionesCsv.exportar(List<Accion>, String)` — O(n)
-- Formato: `tipo,detalle,fechaHora`
-- Si el archivo ya existe, hace **append** (no sobrescribe).
-- Usa escape de CSV para manejar comas y comillas en los campos.
-- Se exporta automáticamente al salir del sistema.
+- Formato: `tipo,detalle,fechaHora`. Hace append si el archivo ya existe.
+- Se exporta automáticamente al salir.
 
 ---
 
-## 11. Preguntas frecuentes del profesor
+## 12. Preguntas frecuentes del profesor
+
+### Sobre la consigna
+
+**¿Cómo se implementaron las relaciones generales (Iteración 3)?**  
+Con un `GrafoLA` no dirigido. Al agregar una amistad se crean dos aristas (A→B y B→A). `obtenerVecinos` llama a `ObtenerAdyacentes` que es O(grado). En redes dispersas el grado es una constante pequeña, lo que cumple el objetivo O(1) indicado en la consigna.
+
+**¿Cómo se calcula la distancia entre clientes?**  
+Con BFS sobre el grafo correspondiente. El BFS explora nivel por nivel usando una cola, garantizando el camino más corto. La distancia se devuelve en saltos; -1 si no hay camino. Complejidad O(V + E).
+
+**¿Cómo se extiende la persistencia para las relaciones generales?**  
+El archivo `clientes.json` tiene el campo `conexiones` (array de nombres). `CargadorClientesJson` las carga en la segunda pasada llamando a `gestor.agregarAmistad(nombre, conexion)`. `GuardadorClientesJson` las serializa consultando `gestor.obtenerVecinos(nombre)`.
+
+**¿Qué TDA modela las relaciones generales?**  
+`GrafoTDA`. La interface define las operaciones (AgregarVertice, AgregarArista, ObtenerAdyacentes, etc.) con complejidades documentadas. La implementación `GrafoLA` es la elegida para la aplicación.
+
+---
 
 ### Sobre TDAs
 
 **¿Qué es un TDA?**  
-Un Tipo de Dato Abstracto es una especificación de un conjunto de datos y las operaciones sobre ellos, independientemente de su implementación. Define el "qué" (interfaz), no el "cómo" (implementación). En este proyecto cada TDA es una interfaz Java con las operaciones y sus complejidades documentadas.
+Especificación de datos + operaciones independiente de la implementación. Define el "qué" (interfaz), no el "cómo" (implementación).
 
-**¿Cuál es la diferencia entre implementación estática y dinámica?**  
-La implementación estática usa arreglos de tamaño fijo pre-alocados. La dinámica usa nodos enlazados que se crean bajo demanda. La dinámica es más flexible (sin límite de capacidad) pero tiene overhead de memoria por nodo. La estática es más rápida en acceso por índice pero tiene capacidad fija.
+**¿Diferencia entre Static y Dynamic en Cola?**  
+`StaticColaTDA.Desacolar` = O(n) porque desplaza el arreglo. `DynamicColaTDA.Desacolar` = O(1) porque mueve el puntero `primero`.
 
-**¿Por qué `StaticColaTDA.Desacolar()` es O(n) y `DynamicColaTDA.Desacolar()` es O(1)?**  
-En la implementación estática, al eliminar el primero del arreglo hay que desplazar todos los elementos una posición hacia la izquierda. En la dinámica, simplemente se actualiza el puntero `primero = primero.sig`, operación de tiempo constante.
+**¿Por qué `Agregar` en Conjunto es O(n)?**  
+Porque llama a `Pertenece(x)` antes de insertar para mantener el invariante de no duplicados. `Pertenece` recorre la estructura linealmente.
 
-**¿Por qué `ConjuntoTDA.Agregar()` es O(n)?**  
-Porque antes de insertar se llama a `Pertenece(x)` para verificar que el elemento no existe ya en el conjunto (invariante: no duplicados). `Pertenece` recorre la estructura linealmente → O(n).
+**¿Por qué `GrafoMA.InicializarGrafo` es O(n²)?**  
+Aloca una matriz n×n donde n = 1.100.000. Completamente inviable en práctica — ilustra la desventaja de la MA para grafos grandes.
 
-**¿Cuál es el invariante de representación del Conjunto?**  
-No hay elementos duplicados. Cada elemento aparece exactamente una vez.
-
----
-
-### Sobre el Grafo
-
-**¿Qué es un grafo dirigido vs. no dirigido?**  
-En un grafo dirigido, las aristas tienen dirección (A→B no implica B→A). En uno no dirigido, son bidireccionales (A—B implica que existe conexión en ambos sentidos). En este proyecto, el grafo dirigido modela el seguimiento y el no dirigido las amistades.
-
-**¿Por qué GrafoLA usa un HashMap interno si es un TDA hecho sin Java collections?**  
-El HashMap interno es una optimización de implementación para mejorar la complejidad de `Vert2Nodo` de O(V) a O(1). El TDA define el "qué" (buscar un vértice), y la implementación decide el "cómo". El uso de HashMap aquí es una decisión de implementación válida que no viola la abstracción del TDA.
-
-**¿Por qué `GrafoMA.InicializarGrafo()` es O(n²)?**  
-Porque aloca una matriz bidimensional `MAdy[n][n]` donde `n = 1.1 millones`. Esto es extremadamente costoso e inviable en la práctica, lo que ilustra claramente la desventaja de la matriz de adyacencia para grafos grandes.
-
-**¿Qué sucede al eliminar un vértice en GrafoLA?**  
-Se remueve el vértice de la lista enlazada y del índice HashMap. Luego se recorren TODOS los demás vértices y se eliminan las aristas que apuntaban al vértice eliminado. Por eso la complejidad es O(V + E_v) donde E_v son las aristas que involucran al vértice.
-
-**¿Cómo funciona el BFS?**  
-Breadth-First Search (Búsqueda en Anchura) explora el grafo nivel por nivel usando una cola. Comienza desde el nodo origen, encola sus vecinos no visitados, y procesa nodo por nodo. La distancia hasta cada nodo visitado es la distancia del nodo actual más 1. Garantiza encontrar el camino más corto en grafos no ponderados. Complejidad: O(V + E).
+**¿Por qué GrafoLA usa HashMap interno si es un TDA propio?**  
+El HashMap es una optimización de implementación válida. El TDA define el "qué"; la implementación decide el "cómo". Sin el HashMap, `Vert2Nodo` sería O(V); con él es O(1).
 
 ---
 
-### Sobre el ABB
+### Sobre arquitectura y decisiones
 
-**¿Cuándo el ABB degenera y por qué es un problema?**  
-Si se insertan elementos en orden creciente o decreciente, el ABB degenera en una lista enlazada (todos los nodos en una sola rama). Las operaciones que son O(log n) en el caso promedio se vuelven O(n). Para evitar esto en producción se usan árboles balanceados (AVL, Red-Black).
+**¿Por qué hay cola de solicitudes (TDA) si la app usa listas por usuario?**  
+El TDA `ColaSolicitudesSeguimiento` existe como implementación correcta y testeada de la Cola aplicada a un dominio. Se conserva como evidencia del trabajo en el TDA. En el flujo de la app se optó por lista per-usuario por las razones de semántica y eficiencia ya explicadas.
 
-**¿Qué significa "nivel 4" en el contexto del ABB?**  
-La raíz está en el nivel 1. Sus hijos en el nivel 2. Los nietos en el nivel 3. Los bisnietos en el nivel 4. `obtenerNivel(4)` devuelve todos los nodos que están exactamente en la cuarta generación del árbol.
+**¿Por qué `StaticClientesTDA` usa `HashMap` y `TreeMap` de Java?**  
+Para O(1) y O(log n) en búsquedas críticas. Los TDAs propios son O(n). Usar colecciones Java para casos de eficiencia es una decisión de ingeniería correcta y justificada.
 
----
-
-### Sobre la arquitectura
-
-**¿Por qué se separaron los paquetes `basic_tdas` y `tda`?**  
-`basic_tdas` contiene estructuras genéricas (Pila, Cola, Conjunto, Grafo) reutilizables en cualquier contexto. `tda` contiene las interfaces específicas del dominio de negocio (`ClientesTDA`, `HistorialAccionesTDA`, `SolicitudesSeguimientoTDA`). Esta separación sigue el principio de separación de responsabilidades y facilita la reutilización.
-
-**¿Por qué `StaticClientesTDA` usa HashMap y TreeMap de Java si los otros TDAs son propios?**  
-Es una decisión de eficiencia justificada. Los TDAs propios de búsqueda son O(n). Para el CRUD de clientes se necesita O(1) (por nombre) y O(log n) (por scoring), que solo lo proveen `HashMap` y `TreeMap` respectivamente. El objetivo académico es demostrar el conocimiento de TDAs; usar colecciones nativas para casos donde la eficiencia es crucial es una práctica correcta de ingeniería.
-
-**¿Por qué el modelo `Cliente` es inmutable?**  
-Para garantizar consistencia: si se comparte una referencia a un `Cliente` entre varias estructuras, nadie puede modificarlo accidentalmente. Si hay que cambiar datos (ej: scoring), se crea un nuevo objeto. Esto sigue el principio de diseño de objetos con estado controlado.
-
-**¿Por qué se usan dos pasadas en CargadorClientesJson?**  
-Para garantizar que todos los vértices del grafo existan antes de agregar aristas entre ellos. Si se intentara agregar una arista hacia un vértice inexistente, `GrafoLA.AgregarArista` lo ignoraría silenciosamente (verifica `if (n1 == null || n2 == null) return`). Las dos pasadas eliminan ese riesgo.
-
-**¿Qué patrón de diseño usa MenuBuilder?**  
-El patrón Builder. Permite construir objetos complejos paso a paso con una API fluida. Separa la lógica de construcción de la representación del objeto.
-
-**¿Cómo funciona el "deshacer"?**  
-Cada acción relevante registra en el historial (Pila) un objeto `Accion` con tipo y detalle. Al deshacer, se desapila la última acción y según el `tipo` se ejecuta la operación inversa:
-- "Registrarse" → eliminar cliente
-- "Seguir" → quitar seguido
-- "Dejar de seguir" → volver a seguir
-- "Enviar solicitud amistad" → quitar solicitud de la cola
-- "Aceptar solicitud amistad" → eliminar la amistad del grafo
-- "Rechazar solicitud amistad" → re-encolar la solicitud
-
-**¿Qué estrategia de encapsulamiento usa la Cola de solicitudes al "listar sin modificar"?**  
-El patrón de **cola auxiliar temporal**: vacía la cola principal en una cola temporal mientras procesa, luego reencola todo de vuelta. Esto preserva el orden FIFO original. Es O(n) en tiempo pero O(1) en espacio adicional relativo (solo una cola temporal).
+**¿Cómo funciona el deshacer?**  
+Cada acción registra en la Pila un objeto `Accion` con tipo y detalle. Al deshacer se desapila y según el tipo se ejecuta la operación inversa: "Registrarse" → eliminar cliente, "Seguir" → quitar seguido, "Enviar solicitud" → revocar solicitud del receptor, "Aceptar solicitud" → eliminar amistad, "Rechazar solicitud" → re-enviar la solicitud.
 
 ---
 
-### Preguntas trampa o de profundidad
+### Preguntas trampa
 
-**¿Qué pasa si se inserta un scoring negativo en el ABB?**  
-El ABB acepta cualquier `Comparable`. Un scoring negativo se insertaría en el subárbol izquierdo si es menor que la raíz. No hay validación en el ABB; la validación debería hacerse en la capa de negocio.
+**¿Puede `consultarConexionesNivel4` devolver duplicados?**  
+Sí. Si dos clientes tienen el mismo scoring y ambos están en el nivel 4 del ABB, el scoring aparece dos veces. El ABB inserta iguales en el subárbol derecho, no deduplica.
 
-**¿Puede `consultarConexionesNivel4` devolver duplicados de scoring?**  
-Sí. Si dos clientes distintos tienen el mismo scoring y ambos están en el nivel 4 del ABB, el scoring aparecerá en el resultado. El ABB no impone unicidad (elemento igual va al subárbol derecho: `else agregarRec(nodo.der, elemento)`).
+**¿Qué pasa si se elimina un cliente con solicitudes pendientes enviadas a otros?**  
+`eliminarCliente` recorre todos los clientes restantes y llama a `eliminarSolicitudRecibida` con el nombre del cliente borrado como origen. Esto limpia las solicitudes de la lista de los receptores.
 
-**¿Qué ocurre si el usuario intenta seguir a más de 2 personas?**  
-`agregarSeguido` verifica `GradoSalida(idCliente) >= MAX_SEGUIDOS` y retorna `false`. El menú muestra el mensaje "alcanzaste el límite de seguidos".
+**¿Qué pasa si dos clientes envían solicitud al mismo usuario?**  
+Ambas se agregan a la lista del receptor en orden de llegada. Aparecen numeradas en pantalla; el receptor elige cuál aceptar/rechazar.
 
-**¿Qué ocurre si se elimina un cliente que tiene solicitudes de amistad pendientes?**  
-`eliminarCliente` elimina el cliente del HashMap y de ambos grafos. Luego recorre todos los clientes restantes y elimina al cliente borrado de sus listas de `solicitudesPendientes`. Sin embargo, la cola `ColaSolicitudesSeguimiento` global no se limpia automáticamente de solicitudes que tenían ese cliente como origen o destino; esto podría considerarse una mejora pendiente.
+**¿Puede un cliente seguir a alguien que ya es su amigo?**  
+Sí. Seguimiento y amistad son relaciones independientes en grafos distintos. Ser amigo no implica seguirse, y seguirse no implica ser amigos.
 
-**¿Cuál es la diferencia entre seguimiento y amistad en el modelo de grafos?**  
-El seguimiento usa el `grafoDirigido`: A puede seguir a B sin que B siga a A. La amistad usa el `grafoNoDirigido`: al agregar amistad se crean dos aristas (A→B y B→A) en el mismo grafo, simulando la bidireccionalidad.
-
-**¿Por qué `GrafoLA.EliminarVertice()` tiene complejidad O(Arist_v) y no O(V)?**  
-Porque el índice HashMap permite encontrar el NodoGrafo en O(1). El costo dominante es recorrer las listas de adyacencia de TODOS los demás vértices para eliminar aristas entrantes al vértice eliminado. En el peor caso, si todos los nodos tienen aristas hacia el vértice eliminado, eso es O(V × grado_promedio) ≈ O(E). En el comentario del código se simplifica como O(Arist_v) refiriéndose a las aristas involucradas.
+**¿Por qué `eliminarCliente` es O(V) y no O(1)?**  
+Porque eliminar el vértice del grafo requiere recorrer las listas de adyacencia de todos los demás nodos para borrar las aristas entrantes. Además se limpian las solicitudes pendientes del cliente eliminado en otras listas.
 
 ---
 
